@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <string.h>
+#include <string>
 #include <vector>
 #include "inc/bl_defs.h"
 #include "inc/DNA_sdna_types.h"
@@ -30,8 +31,12 @@ uint32_t flags = 0;
 SDNA Sdna;
 
 typedef vector<BHead8> FileBlockVector;
+typedef vector<string> StringVector;
+typedef vector<size_t> SizesVector;
 
 FileBlockVector FileBlocks;
+StringVector Names, Types;
+SizesVector  TypesLen;
 
 void showBHead(size_t n, BHead8* h)
 {
@@ -40,27 +45,99 @@ void showBHead(size_t n, BHead8* h)
     printf("%8d: %.4s, %d(%x) bytes, SDNA=%d, %d items (old %llx)\n", n, (char*)&(h->code), h->len, h->len, h->SDNAnr, h->nr, h->old);
 }
 
+int readTag(int fd, const char* tag, const size_t sz)
+{
+    char hdr[8];
 
+    if (_read(fd, hdr, sz) != sz)
+    {
+        printf("Could not read header %*s block header\n", sz, tag);
+        return -1;
+    }
+
+    if (strncmp(hdr, tag, sz))
+    {
+        printf("%*s header not found\n", sz, tag);
+        return -2;
+    }
+    return static_cast<int>(sz);
+}
+
+string *readSz(int fd)
+{
+    string *s = new string;
+    char c;
+    int r;
+
+    do
+    {
+        r = _read(fd, &c, 1);
+        if (r != 1)
+        {
+            delete s;
+            return nullptr;
+        }
+        if(c)
+            s->append(1, c);
+    } while (c != 0);
+    return s;
+}
+
+int readStrings(int fd, const char *tag, StringVector &strings)
+{
+    int cnt = 0;
+    uint32_t  stringsNumber;
+
+    if (readTag(fd, tag, 4) != 4)
+        return -1;
+
+    if (_read(fd, &stringsNumber, 4) != 4)
+        return -2;
+
+    string *name = 0;
+    while (stringsNumber--)
+    {
+        if (!(name = readSz(fd)))
+        {
+            printf("Error reading %u name\n", cnt);
+            return -1;
+        }
+        printf("  %s: %u '%s'\n", tag, cnt, name->c_str());
+        strings.emplace_back(*name);
+        ++cnt;
+    }
+    _lseek(fd, 4 - _tell(fd) % 4, SEEK_CUR);
+    return cnt;
+}
+
+int readTypesLen(int fd, size_t n)
+{
+    if (readTag(fd, "TLEN", 4) != 4)
+        return -1;
+    uint16_t  s;
+    int r;
+    while (n--)
+    {
+        r = _read(fd, &s, 2);
+        if (r != 2)
+            return -1;
+        TypesLen.emplace_back(s);
+    }
+    _lseek(fd, 4 - _tell(fd) % 4, SEEK_CUR);
+    return 0;
+}
 
 int readSDNA(int fd, BHead8 *hd)
 {
     int cnt = 0;
     uint8_t* data = 0;
 
-    const size_t SDNAHDRSIZE = 4;
-    char sdnahdr[SDNAHDRSIZE];
-
-    if (_read(fd, sdnahdr, SDNAHDRSIZE) != SDNAHDRSIZE)
-    {
-        printf("Could not read DNA1 block header\n");
+    if (readTag(fd, "SDNA", 4) != 4)
         return -1;
-    }
+    readStrings(fd, "NAME", Names);
+    readStrings(fd, "TYPE", Types);
+    readTypesLen(fd, Types.size());
 
-    if (strncmp(sdnahdr, "SDNA", SDNAHDRSIZE))
-    {
-        printf("SDNA header not found\n");
-        return -1;
-    }
     return cnt;
 }
 
@@ -82,6 +159,7 @@ size_t readBlocks(int fd)
             readSDNA(fd, &hd);
         else
             _lseek(fd, hd.len, SEEK_CUR);
+
         FileBlocks.push_back(hd);
     }
     return cnt;
@@ -134,5 +212,8 @@ int main(int ac, char** av)
     size_t bcnt = readBlocks(fd);
 
     printf("%u blocks\n", bcnt);
+
+    printf("-- NAMES: %u, TYPES %u\n", Names.size(), Types.size());
+
     _close(fd);
 }
