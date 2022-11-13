@@ -29,7 +29,26 @@ struct FHeader
 uint32_t flags = 0;
 
 SDNA Sdna;
+struct Field
+{
+    int nameIdx, typeIdx;
+    Field(int name, int type) : nameIdx(name), typeIdx(type) {}
+};
 
+typedef vector<Field> FieldVector;
+
+struct Structure
+{
+    int typeIdx;
+    FieldVector fields;
+    Structure(int t) : typeIdx(t) {}
+    size_t fieldsNumber() const 
+    { 
+        return fields.size();  
+    }
+};
+
+typedef vector<Structure> StructureVector;
 typedef vector<BHead8> FileBlockVector;
 typedef vector<string> StringVector;
 typedef vector<size_t> SizesVector;
@@ -37,6 +56,7 @@ typedef vector<size_t> SizesVector;
 FileBlockVector FileBlocks;
 StringVector Names, Types;
 SizesVector  TypesLen;
+StructureVector Structures;
 
 void showBHead(size_t n, BHead8* h)
 {
@@ -127,6 +147,47 @@ int readTypesLen(int fd, size_t n)
     return 0;
 }
 
+int readStructures(int fd)
+{
+    uint32_t sNumber;
+    uint16_t s1, s2;
+    Field *f = nullptr;
+    Structure *s = 0;
+
+    if (readTag(fd, "STRC", 4) != 4)
+        return -1;
+
+    if (_read(fd, &sNumber, 4) != 4)
+        return -2;
+
+    for (uint32_t i = 0; i < sNumber; ++i)
+    {
+        if (_read(fd, &s1, 2) != 2) // typeIdx
+            return -2;
+        if (_read(fd, &s2, 2) != 2) // num of fields
+            return -2;
+
+        s = new Structure(s1);
+        printf("STRC %s\n", Types[s1].c_str());
+
+        for (uint16_t fi = 0; fi < s2; ++fi)
+        {
+            if (_read(fd, &s1, 2) != 2) // type idx
+                return -2;
+            if (_read(fd, &s2, 2) != 2) // name idx
+                return -2;
+
+            f = new Field(s2, s1);
+            s->fields.emplace_back(*f);
+            printf("  %s %s\n", Types[s1].c_str(), Names[s2].c_str());
+        }
+
+        Structures.emplace_back(*s);
+    }
+    return (int)sNumber;
+}
+
+
 int readSDNA(int fd, BHead8 *hd)
 {
     int cnt = 0;
@@ -137,7 +198,7 @@ int readSDNA(int fd, BHead8 *hd)
     readStrings(fd, "NAME", Names);
     readStrings(fd, "TYPE", Types);
     readTypesLen(fd, Types.size());
-
+    readStructures(fd);
     return cnt;
 }
 
