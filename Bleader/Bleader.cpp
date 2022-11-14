@@ -28,7 +28,6 @@ struct FHeader
 
 uint32_t flags = 0;
 
-SDNA Sdna;
 struct Field
 {
     int nameIdx, typeIdx;
@@ -51,21 +50,75 @@ struct Structure
 typedef vector<Structure> StructureVector;
 typedef vector<BHead8> FileBlockVector;
 typedef vector<string> StringVector;
-typedef vector<size_t> SizesVector;
+typedef vector<uint> SizesVector;
 
 FileBlockVector FileBlocks;
 StringVector Names, Types;
-SizesVector  TypesLen;
+SizesVector  TypesLen, NamesLen;
 StructureVector Structures;
 
-void showBHead(size_t n, BHead8* h)
+SDNA Sdna;
+
+// Must be called after filling Names, Types
+void showBHead(BHead8* h)
 {
     if (!h)
         return;
-    printf("%8d: %.4s, %d(%x) bytes, SDNA=%d, %d items (old %llx)\n", n, (char*)&(h->code), h->len, h->len, h->SDNAnr, h->nr, h->old);
+
+    const char* SDNAType = h->SDNAnr >= Structures.size() ? " ? " : Types[Structures[h->SDNAnr].typeIdx].c_str();
+
+    printf("%.4s, %d(0x%x)b, %s", (char*)&(h->code), h->len, h->len, SDNAType);
+    if (h->nr > 1)
+        printf("[%d]", h->nr);
+
+    printf(" (0x%llx)\n", h->old);
+
 }
 
-int readTag(int fd, const char* tag, const size_t sz)
+// Calc size of N-dim array in elements
+int DNA_elem_array_size(const char* str)
+{
+    int result = 1;
+    int current = 0;
+    while (true) {
+        char c = *str++;
+        switch (c) {
+        case '\0':
+            return result;
+        case '[':
+            current = 0;
+            break;
+        case ']':
+            result *= current;
+            break;
+        case '0':
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+        case '5':
+        case '6':
+        case '7':
+        case '8':
+        case '9':
+            current = current * 10 + (c - '0');
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+void calcNamesLen()
+{
+    for(StringVector::iterator it = Names.begin(); it != Names.end(); ++it)
+    {
+        NamesLen.push_back(DNA_elem_array_size(it->c_str()));
+        printf("'%s' size = %d items\n", it->c_str(), NamesLen.back());
+    }
+}
+
+int readTag(int fd, const char* tag, const uint sz)
 {
     char hdr[8];
 
@@ -122,7 +175,6 @@ int readStrings(int fd, const char *tag, StringVector &strings)
             printf("Error reading %u name\n", cnt);
             return -1;
         }
-        printf("  %s: %u '%s'\n", tag, cnt, name->c_str());
         strings.emplace_back(*name);
         ++cnt;
     }
@@ -130,27 +182,29 @@ int readStrings(int fd, const char *tag, StringVector &strings)
     return cnt;
 }
 
-int readTypesLen(int fd, size_t n)
+int readTypesLen(int fd, uint n)
 {
     if (readTag(fd, "TLEN", 4) != 4)
         return -1;
     uint16_t  s;
-    int r;
-    while (n--)
+
+    for (uint i = 0; i < n; ++i)
     {
-        r = _read(fd, &s, 2);
-        if (r != 2)
+        if (_read(fd, &s, 2) != 2)
             return -1;
         TypesLen.emplace_back(s);
+        printf("  %s: %u\n", Types[i].c_str(), (int)s);
     }
-    _lseek(fd, 4 - _tell(fd) % 4, SEEK_CUR);
+    if (Types.size() & 1)
+        _lseek(fd, 2, SEEK_CUR);
+
     return 0;
 }
 
 int readStructures(int fd)
 {
     uint32_t sNumber;
-    uint16_t s1, s2;
+    uint16_t s1, s2, fn;
     Field *f = nullptr;
     Structure *s = 0;
 
@@ -170,16 +224,26 @@ int readStructures(int fd)
         s = new Structure(s1);
         printf("STRC %s\n", Types[s1].c_str());
 
-        for (uint16_t fi = 0; fi < s2; ++fi)
+        for (int fi = 0; fi < s2; ++fi)
         {
             if (_read(fd, &s1, 2) != 2) // type idx
                 return -2;
-            if (_read(fd, &s2, 2) != 2) // name idx
+            if (_read(fd, &fn, 2) != 2) // name idx
                 return -2;
 
-            f = new Field(s2, s1);
+            f = new Field(fn, s1);
             s->fields.emplace_back(*f);
-            printf("  %s %s\n", Types[s1].c_str(), Names[s2].c_str());
+            if (s1 >= Types.size())
+            {
+                printf("EE Index %d in types >= types len %u (pos %d.%d)\n", (int)s1, Types.size(), i, fi);
+                return -1;
+            }
+            if (fn >= Names.size())
+            {
+                printf("EE Index %d in names >= types len %u (pos %d.%d)\n", (int)fn, Names.size(), i, fi);
+                return -2;
+            }
+            printf("  %s %s\n", Types[s1].c_str(), Names[fn].c_str());
         }
 
         Structures.emplace_back(*s);
@@ -202,11 +266,11 @@ int readSDNA(int fd, BHead8 *hd)
     return cnt;
 }
 
-size_t readBlocks(int fd)
+uint readBlocks(int fd)
 {
     BHead8 hd;
-    const size_t HDSZ = sizeof(BHead8);
-    size_t cnt = 0;
+    const uint HDSZ = sizeof(BHead8);
+    uint cnt = 0;
 
     while (1)
     {
@@ -214,14 +278,19 @@ size_t readBlocks(int fd)
         {
             break;
         }
-        showBHead(cnt, &hd);
-        ++cnt;
+
+        if (hd.code == ENDB)
+            break;
         if (hd.code == DNA1)
+        {
             readSDNA(fd, &hd);
+            calcNamesLen();
+         }
         else
             _lseek(fd, hd.len, SEEK_CUR);
 
         FileBlocks.push_back(hd);
+        ++cnt;
     }
     return cnt;
 }
@@ -270,7 +339,9 @@ int main(int ac, char** av)
         hdr.v_major, hdr.v_minor);
 
 
-    size_t bcnt = readBlocks(fd);
+    uint bcnt = readBlocks(fd);
+    for(FileBlockVector::iterator it = FileBlocks.begin(); it != FileBlocks.end(); ++it)
+        showBHead(&*it);;
 
     printf("%u blocks\n", bcnt);
 
