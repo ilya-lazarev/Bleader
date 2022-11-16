@@ -111,10 +111,10 @@ int DNA_elem_array_size(const char* str)
 
 void calcNamesLen()
 {
-    for(StringVector::iterator it = Names.begin(); it != Names.end(); ++it)
+    for (auto &s : Names)
     {
-        NamesLen.push_back(DNA_elem_array_size(it->c_str()));
-        printf("'%s' size = %d items\n", it->c_str(), NamesLen.back());
+        NamesLen.push_back(DNA_elem_array_size(s.c_str()));
+        printf("'%s' size = %d items\n", s.c_str(), NamesLen.back());
     }
 }
 
@@ -340,6 +340,8 @@ int main(int ac, char** av)
 
 
     uint bcnt = readBlocks(fd);
+
+
     for(FileBlockVector::iterator it = FileBlocks.begin(); it != FileBlocks.end(); ++it)
         showBHead(&*it);;
 
